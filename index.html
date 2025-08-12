@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Crystal Quest - Test (5 levens)</title>
+  <style>
+    :root{--bg:#dff3ff;--panel:#ffffffaa;--accent:#6b4de0}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:linear-gradient(180deg,var(--bg),#cbeefb);-webkit-tap-highlight-color:transparent}
+    .wrap{max-width:420px;margin:12px auto;padding:12px}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+    header h1{font-size:18px;margin:0;color:#2b2b2b}
+    .hud{display:flex;gap:8px;align-items:center}
+    .chip{background:var(--panel);padding:8px 12px;border-radius:12px;box-shadow:0 4px 10px rgba(20,30,60,0.08)}
+    #lives{font-weight:600}
+    canvas{width:100%;height:auto;border-radius:12px;display:block;background:linear-gradient(180deg,#9fd6ff,#7fc8f9);box-shadow:0 8px 20px rgba(20,30,60,0.12)}
+    .controls{display:flex;gap:8px;margin-top:10px;justify-content:center}
+    button{padding:8px 12px;border-radius:10px;border:0;background:var(--accent);color:white;font-weight:600}
+    .small{padding:6px 8px;font-size:14px}
+    footer{margin-top:10px;text-align:center;color:#184a6a;font-size:13px}
+    @media (min-width:600px){.wrap{max-width:560px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Crystal Quest — Test</h1>
+      <div class="hud">
+        <div class="chip" id="level">Level: 1</div>
+        <div class="chip" id="lives">Levens: 5</div>
+      </div>
+    </header>
+
+    <canvas id="game" width="560" height="560" tabindex="0"></canvas>
+
+    <div class="controls">
+      <button id="reset" class="small">Herstart level (-1 leven)</button>
+      <button id="shuffle" class="small">Schud (kost 1 zet)</button>
+      <button id="hint" class="small">Hint</button>
+    </div>
+
+    <footer>Tip: swipe om kristallen te wisselen. Als je het doel niet haalt, verlies je 1 leven.</footer>
+  </div>
+
+<script>
+/* Crystal Quest - Match-3 test build
+   - 7x7 grid
+   - 5 levens
+   - touch & mouse controls
+   - simple match detection, gravity and refill
+   - restart level button subtracts a life
+   - lightweight and mobile friendly
+*/
+
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const livesEl = document.getElementById('lives');
+  const levelEl = document.getElementById('level');
+  const resetBtn = document.getElementById('reset');
+  const shuffleBtn = document.getElementById('shuffle');
+  const hintBtn = document.getElementById('hint');
+
+  // Config
+  const ROWS = 7, COLS = 7;
+  let lives = 5;
+  let level = 1;
+  let score = 0;
+  let movesLeft = 30; // sample per-level move limit
+  let targetScore = 500; // sample target
+
+  // board data
+  const COLORS = [
+    {name:'fire', color:'#ff6b6b', symbol:'🔥'},
+    {name:'water', color:'#39a4ff', symbol:'💧'},
+    {name:'leaf', color:'#2ec26f', symbol:'🌿'},
+    {name:'star', color:'#ffd54f', symbol:'⭐'},
+    {name:'moon', color:'#8c6bff', symbol:'🌙'},
+    {name:'gem', color:'#ffb86b', symbol:'🔷'}
+  ];
+  const N_TYPES = COLORS.length;
+
+  let board = []; // board[r][c] = {type:int}
+  let animating = false;
+
+  // responsive canvas sizing
+  function resizeCanvas(){
+    const maxW = Math.min(window.innerWidth - 32, 560);
+    canvas.width = maxW;
+    canvas.height = maxW;
+    draw();
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // utils
+  function randInt(n){ return Math.floor(Math.random()*n); }
+
+  // initialize without immediate matches
+  function newBoard(){
+    board = Array.from({length:ROWS},()=>Array.from({length:COLS},()=>({type:0})));
+    for(let r=0;r<ROWS;r++){
+      for(let c=0;c<COLS;c++){
+        let t;
+        do{ t = randInt(N_TYPES); } while(
+          (c>=2 && board[r][c-1].type===t && board[r][c-2].type===t) ||
+          (r>=2 && board[r-1][c].type===t && board[r-2][c].type===t)
+        );
+        board[r][c].type = t;
+      }
+    }
+  }
+
+  // drawing
+  function draw(){
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0,0,w,h);
+    // background vignette
+    const g = ctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0,'rgba(255,255,255,0.12)');
+    g.addColorStop(1,'rgba(255,255,255,0.02)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,w,h);
+
+    const cell = Math.floor(w / COLS);
+    const offsetX = (w - cell*COLS)/2;
+    const offsetY = (h - cell*ROWS)/2;
+
+    // draw grid background panel
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    roundRect(ctx, offsetX-6, offsetY-6, cell*COLS+12, cell*ROWS+12, 14);
+    ctx.fill();
+
+    // tiles
+    for(let r=0;r<ROWS;r++){
+      for(let c=0;c<COLS;c++){
+        const x = offsetX + c*cell;
+        const y = offsetY + r*cell;
+        drawTile(board[r][c], x, y, cell-8);
+      }
+    }
+
+    // HUD overlays
+    ctx.fillStyle='#083b57';
+    ctx.font = `${Math.max(12, Math.floor(w*0.04))}px sans-serif`;
+    ctx.textAlign='left';
+    ctx.fillText(`Score: ${score}`, 10, 24);
+    ctx.textAlign='right';
+    ctx.fillText(`Moves: ${movesLeft}`, w-10, 24);
+  }
+
+  function drawTile(tile, x, y, size){
+    // tile.type integer
+    const pad = 4;
+    const cx = x + pad; const cy = y + pad; const s = size;
+    const t = tile.type;
+    const col = COLORS[t].color;
+
+    // rounded gem shape
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.beginPath();
+    const rx = s*0.45, ry = s*0.45;
+    roundedPolygon(ctx, s-8, s-8, 6);
+    ctx.closePath();
+    // glossy fill
+    const g = ctx.createLinearGradient(0,0,s,s);
+    g.addColorStop(0, shadeColor(col, 16));
+    g.addColorStop(1, shadeColor(col, -8));
+    ctx.fillStyle = g;
+    ctx.fill();
+    // outline
+    ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.stroke();
+
+    // symbol for accessibility
+    ctx.font = `${Math.floor(s*0.45)}px serif`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillStyle='rgba(255,255,255,0.96)';
+    ctx.fillText(COLORS[t].symbol, s/2-4, s/2-6);
+    ctx.restore();
+  }
+
+  // small helpers for shape drawing
+  function roundRect(ctx,x,y,w,h,r){
+    const rr = r||6;
+    ctx.beginPath();
+    ctx.moveTo(x+rr,y);
+    ctx.arcTo(x+w,y, x+w,y+h, rr);
+    ctx.arcTo(x+w,y+h, x,y+h, rr);
+    ctx.arcTo(x,y+h, x,y, rr);
+    ctx.arcTo(x,y, x+w,y, rr);
+    ctx.closePath();
+  }
+  function roundedPolygon(ctx,w,h,pts){
+    // draw a rounded shape - simplified
+    const cx = w/2, cy = h/2, rx = w/2, ry = h/2;
+    ctx.moveTo(cx + rx*Math.cos(0), cy + ry*Math.sin(0));
+    for(let i=1;i<pts;i++){
+      const a = (i/pts)*Math.PI*2;
+      ctx.lineTo(cx + rx*Math.cos(a), cy + ry*Math.sin(a));
+    }
+  }
+  function shadeColor(hex, percent) {
+    // percent positive -> lighter, negative -> darker
+    const f = hex.slice(1); const t = percent<0?0:255; const p = Math.abs(percent)/100;
+    const R = parseInt(f.substring(0,2),16), G = parseInt(f.substring(2,4),16), B = parseInt(f.substring(4,6),16);
+    const newR = Math.round((t - R)*p)+R; const newG = Math.round((t - G)*p)+G; const newB = Math.round((t - B)*p)+B;
+    return `rgb(${newR},${newG},${newB})`;
+  }
+
+  // match detection
+  function findMatches(){
+    const matches = [];
+    // horiz
+    for(let r=0;r<ROWS;r++){
+      let run = 1;
+      for(let c=1;c<=COLS;c++){
+        if(c<COLS && board[r][c].type===board[r][c-1].type) run++; else {
+          if(run>=3){
+            for(let k=0;k<run;k++) matches.push([r,c-1-k]);
+          }
+          run = 1;
+        }
+      }
+    }
+    // vert
+    for(let c=0;c<COLS;c++){
+      let run=1;
+      for(let r=1;r<=ROWS;r++){
+        if(r<ROWS && board[r][c].type===board[r-1][c].type) run++; else {
+          if(run>=3){
+            for(let k=0;k<run;k++) matches.push([r-1-k,c]);
+          }
+          run=1;
+        }
+      }
+    }
+    // remove duplicates
+    const unique = {};
+    matches.forEach(([r,c])=> unique[`${r},${c}`]=[r,c]);
+    return Object.values(unique);
+  }
+
+  function clearMatches(matchCells){
+    matchCells.forEach(([r,c]) => { board[r][c] = null; score += 10; });
+  }
+
+  function collapseBoard(){
+    for(let c=0;c<COLS;c++){
+      let write = ROWS-1;
+      for(let r=ROWS-1;r>=0;r--){
+        if(board[r][c]!==null){ board[write][c] = board[r][c]; write--; }
+      }
+      for(let r=write;r>=0;r--){ board[r][c] = {type: randInt(N_TYPES)}; }
+    }
+  }
+
+  function resolveMatchesCascade(){
+    let totalCleared = 0;
+    while(true){
+      const matches = findMatches();
+      if(matches.length===0) break;
+      totalCleared += matches.length;
+      clearMatches(matches);
+      draw();
+      // simple pause simulation for clarity
+      // collapse
+      collapseBoard();
+    }
+    return totalCleared;
+  }
+
+  // swapping
+  function swapCells(r1,c1,r2,c2){
+    const tmp = board[r1][c1]; board[r1][c1] = board[r2][c2]; board[r2][c2] = tmp;
+  }
+
+  function canMakeMatchBySwap(r1,c1,r2,c2){
+    swapCells(r1,c1,r2,c2);
+    const ok = findMatches().length>0;
+    swapCells(r1,c1,r2,c2);
+    return ok;
+  }
+
+  // input handling
+  let selected = null; // {r,c}
+  let touchStart = null;
+
+  function coordToCell(x,y){
+    const rect = canvas.getBoundingClientRect();
+    const cx = x - rect.left; const cy = y - rect.top;
+    const cell = Math.floor(canvas.width / COLS);
+    const offset = (canvas.width - cell*COLS)/2;
+    const c = Math.floor((cx - offset) / cell);
+    const r = Math.floor((cy - offset) / cell);
+    if(r<0 || r>=ROWS || c<0 || c>=COLS) return null;
+    return {r,c};
+  }
+
+  function handleSelect(r,c){
+    if(animating) return;
+    if(!selected){ selected = {r,c}; return; }
+    const dr = Math.abs(selected.r - r); const dc = Math.abs(selected.c - c);
+    if((dr===1 && dc===0) || (dr===0 && dc===1)){
+      // try swap
+      if(canMakeMatchBySwap(selected.r,selected.c,r,c)){
+        swapCells(selected.r,selected.c,r,c);
+        movesLeft--;
+        const cleared = resolveMatchesCascade();
+        if(cleared===0){ /* shouldn't happen */ }
+        updateHUD();
+        checkLevelEnd();
+      } else {
+        // swap visually and swap back (no match)
+        // simple feedback: slight shake
+        // for test: do nothing but decrement a small penalty? no - keep simple
+      }
+    }
+    selected = null;
+    draw();
+  }
+
+  // level ending
+  function checkLevelEnd(){
+    if(score >= targetScore){
+      alert('Level gehaald!');
+      level++;
+      levelEl.textContent = `Level: ${level}`;
+      // bump difficulty
+      targetScore += 250;
+      movesLeft = 30;
+      newBoard();
+      draw();
+    } else if(movesLeft <= 0){
+      loseLife();
+    }
+  }
+
+  function loseLife(){
+    lives--;
+    updateHUD();
+    if(lives<=0){
+      alert('Game over — geen levens meer.');
+      // reset entire game
+      lives = 5; level = 1; score = 0; targetScore = 500; movesLeft = 30;
+      levelEl.textContent = `Level: ${level}`;
+    }
+    newBoard();
+    draw();
+  }
+
+  function updateHUD(){
+    livesEl.textContent = `Levens: ${lives}`;
+  }
+
+  // Buttons
+  resetBtn.addEventListener('click', ()=>{
+    if(lives>0){ lives--; updateHUD(); newBoard(); draw(); }
+  });
+  shuffleBtn.addEventListener('click', ()=>{
+    // shuffle board - costs a move
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) board[r][c].type = randInt(N_TYPES);
+    movesLeft = Math.max(0, movesLeft-1);
+    resolveMatchesCascade(); draw(); updateHUD();
+  });
+  hintBtn.addEventListener('click', ()=>{
+    // find any possible swap that creates match
+    for(let r=0;r<ROWS;r++){
+      for(let c=0;c<COLS;c++){
+        const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+        for(const [dr,dc] of dirs){
+          const nr=r+dr,nc=c+dc; if(nr<0||nr>=ROWS||nc<0||nc>=COLS) continue;
+          if(canMakeMatchBySwap(r,c,nr,nc)){
+            alert(`Probeer deze verwisseling: (${r+1},${c+1}) ↔ (${nr+1},${nc+1})`);
+            return;
+          }
+        }
+      }
+    }
+    alert('Geen hints gevonden — schud!');
+  });
+
+  // input events (mouse & touch)
+  canvas.addEventListener('mousedown', e => {
+    const cell = coordToCell(e.clientX, e.clientY);
+    if(cell) handleSelect(cell.r, cell.c);
+  });
+  canvas.addEventListener('touchstart', e => {
+    const t = e.touches[0]; touchStart = {x:t.clientX,y:t.clientY, time: Date.now()};
+  }, {passive:true});
+  canvas.addEventListener('touchend', e => {
+    if(!touchStart) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStart.x; const dy = t.clientY - touchStart.y;
+    const absX = Math.abs(dx), absY = Math.abs(dy);
+    if(Math.max(absX,absY) < 18){
+      // tap
+      const cell = coordToCell(t.clientX, t.clientY); if(cell) handleSelect(cell.r,cell.c);
+    } else {
+      // swipe -> determine direction
+      const cellStart = coordToCell(t.clientX - dx, t.clientY - dy);
+      const cellEnd = coordToCell(t.clientX, t.clientY);
+      if(cellStart && cellEnd){
+        // if adjacent, try swap via end cell
+        const dr = cellEnd.r - cellStart.r; const dc = cellEnd.c - cellStart.c;
+        if(Math.abs(dr)+Math.abs(dc)===1) handleSelect(cellEnd.r, cellEnd.c);
+      }
+    }
+    touchStart = null;
+  }, {passive:true});
+
+  // keyboard for debugging in desktop
+  canvas.addEventListener('keydown', e => {
+    if(e.key === 'r') { resetBtn.click(); }
+    if(e.key === 's') { shuffleBtn.click(); }
+  });
+
+  // init
+  newBoard();
+  resolveMatchesCascade();
+  updateHUD();
+  draw();
+
+})();
+</script>
+</body>
+</html>
